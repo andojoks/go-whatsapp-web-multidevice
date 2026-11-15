@@ -154,6 +154,9 @@ func initEnvConfig() {
 	if envDBKEYSURI := viper.GetString("db_keys_uri"); envDBKEYSURI != "" {
 		config.DBKeysURI = envDBKEYSURI
 	}
+	if envChatStorageURI := viper.GetString("chat_storage_uri"); envChatStorageURI != "" {
+		config.ChatStorageURI = envChatStorageURI
+	}
 	if viper.IsSet("chat_storage_max_open_conns") {
 		if n := viper.GetInt("chat_storage_max_open_conns"); n > 0 {
 			config.ChatStorageMaxOpenConns = n
@@ -432,6 +435,12 @@ func initFlags() {
 		"db-keys-uri", "",
 		config.DBKeysURI,
 		`the database uri to store the optional keys cache (by default, we'll use the same database uri). avoid in-memory storage in production. database uri --db-keys-uri <string> | example: --db-keys-uri="file:storages/whatsapp-keys.db?_foreign_keys=on"`,
+	)
+	rootCmd.PersistentFlags().StringVarP(
+		&config.ChatStorageURI,
+		"chat-storage-uri", "",
+		config.ChatStorageURI,
+		`SQLite uri for chat, message and schedule history. Use an in-memory uri to keep history out of local storage. --chat-storage-uri <string> | example: --chat-storage-uri="file::memory:?cache=shared"`,
 	)
 
 	// WhatsApp flags

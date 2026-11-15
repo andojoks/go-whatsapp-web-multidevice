@@ -1,0 +1,20 @@
+# /etc/sudoers.d/gowa-caddy
+#
+# Scoped privileges for a routing-only deploy user (see DEPLOYMENT.md). The user
+# still needs write access to /etc/caddy/sites-enabled, which install-base.sh
+# grants with --owner.
+#
+# Install with:
+#   sudo install -m 0440 vps-scripts/caddy/sudoers.template /etc/sudoers.d/gowa-caddy
+#   sudo visudo -cf /etc/sudoers.d/gowa-caddy
+#
+# Replace "deploy" with the real CI/deploy account.
+deploy ALL=(root) NOPASSWD: /usr/bin/systemctl reload caddy
+deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart caddy
+deploy ALL=(root) NOPASSWD: /usr/bin/systemctl start caddy
+deploy ALL=(root) NOPASSWD: /usr/bin/systemctl enable --now caddy
+# Debian/Ubuntu images where /bin is not merged into /usr:
+deploy ALL=(root) NOPASSWD: /bin/systemctl reload caddy
+deploy ALL=(root) NOPASSWD: /bin/systemctl restart caddy
+deploy ALL=(root) NOPASSWD: /bin/systemctl start caddy
+deploy ALL=(root) NOPASSWD: /bin/systemctl enable --now caddy

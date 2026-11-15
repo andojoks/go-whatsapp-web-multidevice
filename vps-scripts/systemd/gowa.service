@@ -1,0 +1,33 @@
+[Unit]
+Description=GOWA WhatsApp OTP API
+Documentation=https://github.com/andojoks/go-whatsapp-web-multidevice
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@APP_USER@
+Group=@APP_USER@
+WorkingDirectory=@APP_DIR@
+# GOWA loads @APP_DIR@/.env itself and listens on loopback behind Caddy.
+ExecStart=@APP_DIR@/bin/gowa rest
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+LimitNOFILE=65535
+UMask=0077
+
+# Hardening: the service only needs to read its directory and write runtime
+# QR/media scratch files below it.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=@APP_DIR@
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

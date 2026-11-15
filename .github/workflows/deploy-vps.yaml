@@ -1,0 +1,317 @@
+name: Deploy VPS
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "vps-scripts/**"
+      - ".env.example"
+      - ".github/workflows/deploy-vps.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy GOWA to bare Ubuntu VPS
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in VPS_HOST VPS_SSH_KEY; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing GitHub Actions secret: ${name}"
+              missing=1
+            fi
+          done
+          [[ "$missing" -eq 0 ]]
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: src/go.mod
+          cache: true
+          cache-dependency-path: src/go.sum
+
+      - name: Test
+        run: go test -tags purego ./...
+        working-directory: src
+
+      - name: Build linux binary
+        env:
+          VPS_GOARCH: ${{ secrets.VPS_GOARCH }}
+        run: |
+          set -euo pipefail
+          arch="${VPS_GOARCH:-amd64}"
+          case "$arch" in
+            amd64 | arm64) ;;
+            *)
+              echo "::error::VPS_GOARCH must be amd64 or arm64"
+              exit 1
+              ;;
+          esac
+          mkdir -p dist/bundle
+          cd src
+          CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+            go build -tags purego -trimpath -ldflags="-s -w" -o ../dist/bundle/gowa .
+          ls -lh ../dist/bundle/gowa
+
+      - name: Prepare deployment bundle
+        env:
+          APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+        run: |
+          set -euo pipefail
+          cp -r vps-scripts dist/bundle/vps-scripts
+
+          if [[ -n "${APP_ENV_FILE:-}" ]]; then
+            # A single secret holding the whole .env file wins when provided.
+            printf '%s\n' "$APP_ENV_FILE" > dist/bundle/.env
+            echo "Using application config from the APP_ENV_FILE secret"
+          else
+            # Otherwise map every key listed in .env.example to a same-named
+            # secret, or a PROD_<KEY> / <KEY>_PROD variant. Keys with a safe
+            # application-side default may be omitted.
+            python3 - <<'PY'
+          import json
+          import os
+          import re
+
+          secrets = json.loads(os.environ["SECRETS_JSON"])
+
+          keys = []
+          with open(".env.example", encoding="utf-8") as handle:
+              for line in handle:
+                  match = re.match(r"^([A-Z][A-Z0-9_]*)=", line)
+                  if match:
+                      keys.append(match.group(1))
+
+          required = {"DB_URI", "APP_BASIC_AUTH", "PUBLIC_BASE_URL"}
+          missing = []
+          lines = []
+          for key in keys:
+              if key.startswith("VPS_"):
+                  continue
+              for candidate in (f"PROD_{key}", key, f"{key}_PROD"):
+                  if candidate in secrets:
+                      value = json.dumps(secrets[candidate], ensure_ascii=False)
+                      lines.append(f"{key}={value}")
+                      break
+              else:
+                  if key in required:
+                      missing.append(key)
+
+          with open("dist/bundle/.env", "w", encoding="utf-8", newline="\n") as handle:
+              handle.write("\n".join(lines) + "\n")
+
+          if missing:
+              print("::error::No GitHub secret found for: " + ", ".join(missing))
+              raise SystemExit(1)
+          print(f"Wrote {len(lines)} application settings from GitHub secrets")
+          PY
+          fi
+
+          sed -i 's/\r$//' dist/bundle/.env
+          # Never ship VPS connection details (or a local private key) to the server.
+          sed -i '/^VPS_[A-Z0-9_]*=/d' dist/bundle/.env
+
+          # shellcheck source=vps-scripts/lib/load-env.sh
+          source vps-scripts/lib/load-env.sh
+
+          # Caddy is the only public entry point; bind GOWA to loopback on its
+          # own port. On a shared Caddy every app needs a unique port.
+          app_port="$(env_file_get dist/bundle/.env APP_PORT "8081")"
+          app_port="${app_port%\"}"
+          app_port="${app_port#\"}"
+          app_port="${app_port%\'}"
+          app_port="${app_port#\'}"
+          if [[ ! "$app_port" =~ ^[0-9]+$ ]]; then
+            echo "::error::APP_PORT must be numeric (got '${app_port}')"
+            exit 1
+          fi
+          env_set dist/bundle/.env APP_HOST "127.0.0.1"
+          env_set dist/bundle/.env APP_PORT "$app_port"
+          env_set dist/bundle/.env APP_ALLOW_UNAUTHENTICATED "false"
+          # Shared-Caddy identity (unique per app on the VPS).
+          env_set_default dist/bundle/.env GOWA_CADDY_SITE_ID "gowa-otp"
+          env_set_default dist/bundle/.env GOWA_CADDY_UPSTREAM "127.0.0.1:${app_port}"
+          # OTP deployments keep message history in memory only.
+          env_set dist/bundle/.env CHAT_STORAGE_URI "file::memory:?cache=shared"
+          env_set dist/bundle/.env CHAT_STORAGE_MAX_OPEN_CONNS "1"
+
+          echo "APP_PORT=${app_port}"
+          echo "GOWA_CADDY_SITE_ID=$(env_file_get dist/bundle/.env GOWA_CADDY_SITE_ID "")"
+
+          public_base="$(env_file_get dist/bundle/.env PUBLIC_BASE_URL "")"
+          public_base="${public_base%/}"
+          if [[ ! "$public_base" =~ ^https?://[^/]+$ ]]; then
+            echo "::error::PUBLIC_BASE_URL must be an absolute http(s) origin without a path (got: '${public_base}')"
+            exit 1
+          fi
+          env_set dist/bundle/.env PUBLIC_BASE_URL "$public_base"
+
+          db_uri="$(env_file_get dist/bundle/.env DB_URI "")"
+          if [[ "$db_uri" != postgres://* ]]; then
+            echo "::error::DB_URI must be a PostgreSQL URI (postgres://...)"
+            exit 1
+          fi
+          if [[ "$db_uri" == *CHANGE_ME* ]]; then
+            echo "::error::DB_URI still contains a CHANGE_ME placeholder"
+            exit 1
+          fi
+
+          basic_auth="$(env_file_get dist/bundle/.env APP_BASIC_AUTH "")"
+          if [[ "$basic_auth" != *:* || "$basic_auth" == *CHANGE_ME* ]]; then
+            echo "::error::APP_BASIC_AUTH must be a real user:password pair"
+            exit 1
+          fi
+
+          echo "PUBLIC_BASE_URL=${public_base}"
+          # Log only host/database; never echo the user:password userinfo.
+          db_target="${db_uri#*://}"
+          db_target="${db_target#*@}"
+          echo "DB_URI target: ${db_target%%\?*}"
+          chmod +x dist/bundle/vps-scripts/*.sh dist/bundle/vps-scripts/lib/*.sh
+
+      - name: Configure SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_PORT: ${{ secrets.VPS_SSH_PORT }}
+          VPS_SSH_USER: ${{ secrets.VPS_SSH_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%b\n' "$VPS_SSH_KEY" | tr -d '\r' > ~/.ssh/gowa_deploy
+          chmod 600 ~/.ssh/gowa_deploy
+          cat > ~/.ssh/config <<EOF
+          Host gowa-vps
+            HostName ${VPS_HOST}
+            User ${VPS_SSH_USER:-root}
+            Port ${VPS_SSH_PORT:-22}
+            IdentityFile ~/.ssh/gowa_deploy
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+          EOF
+          chmod 600 ~/.ssh/config
+          ssh gowa-vps 'echo "SSH OK: $(hostname)"'
+
+      - name: Upload bundle
+        run: |
+          set -euo pipefail
+          ssh gowa-vps 'rm -rf /tmp/gowa-deploy && mkdir -p /tmp/gowa-deploy'
+          tar -C dist/bundle -czf - . | ssh gowa-vps 'tar -xzf - -C /tmp/gowa-deploy'
+
+      - name: Install and restart on VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_ACME_EMAIL: ${{ secrets.VPS_ACME_EMAIL }}
+          VPS_SSH_USER: ${{ secrets.VPS_SSH_USER }}
+        run: |
+          set -euo pipefail
+          # setup-vps.sh must run as root. When VPS_SSH_USER is set we log in
+          # as that provider account and elevate with passwordless sudo;
+          # otherwise the default login user is root.
+          if [[ -n "${VPS_SSH_USER:-}" ]]; then
+            SUDO="sudo -n "
+          else
+            SUDO=""
+          fi
+          # shellcheck source=vps-scripts/lib/load-env.sh
+          source vps-scripts/lib/load-env.sh
+          app_port="$(env_file_get dist/bundle/.env APP_PORT "8081")"
+          site_id="$(env_file_get dist/bundle/.env GOWA_CADDY_SITE_ID "gowa-otp")"
+          upstream="$(env_file_get dist/bundle/.env GOWA_CADDY_UPSTREAM "127.0.0.1:${app_port}")"
+          extra_hosts="$(env_file_get dist/bundle/.env GOWA_CADDY_EXTRA_HOSTS "")"
+          ssh gowa-vps "${SUDO}env VPS_PUBLIC_IP='${VPS_HOST}' VPS_ACME_EMAIL='${VPS_ACME_EMAIL}' GOWA_CADDY_SITE_ID='${site_id}' GOWA_CADDY_UPSTREAM='${upstream}' GOWA_CADDY_EXTRA_HOSTS='${extra_hosts}' GOWA_APP_PORT='${app_port}' bash /tmp/gowa-deploy/vps-scripts/setup-vps.sh --binary /tmp/gowa-deploy/gowa --env-file /tmp/gowa-deploy/.env"
+          ssh gowa-vps "curl -fsS --max-time 5 http://127.0.0.1:${app_port}/health"
+
+      - name: Verify accessibility
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+
+          # A shared Caddy can route the bare VPS IP to a different app, so
+          # only this app's own origin is a valid target.
+          # shellcheck source=vps-scripts/lib/load-env.sh
+          source vps-scripts/lib/load-env.sh
+          public_base="$(env_file_get dist/bundle/.env PUBLIC_BASE_URL "")"
+          public_base="${public_base%/}"
+          basic_auth="$(env_file_get dist/bundle/.env APP_BASIC_AUTH "")"
+          if [[ -z "$public_base" ]]; then
+            echo "::error::PUBLIC_BASE_URL is missing from the deployment bundle"
+            exit 1
+          fi
+
+          # When DNS has not propagated yet (or the runner resolver is stale),
+          # retry the same request against the VPS IP. curl still validates the
+          # certificate and sends the public Host/SNI, so this is a real check.
+          public_hostport="${public_base#*://}"
+          public_host="${public_hostport%%:*}"
+          public_port="${public_hostport##*:}"
+          if [[ "$public_port" == "$public_host" ]]; then
+            if [[ "$public_base" == https://* ]]; then
+              public_port=443
+            else
+              public_port=80
+            fi
+          fi
+
+          curl_args=()
+          reachable=0
+          for _ in $(seq 1 20); do
+            if curl -fsS --max-time 5 "${public_base}/health"; then
+              reachable=1
+              break
+            fi
+            sleep 3
+          done
+          if [[ "$reachable" -ne 1 ]]; then
+            echo "::warning::${public_base}/health was not reachable via DNS; retrying against ${VPS_HOST} directly"
+            curl_args=(--resolve "${public_host}:${public_port}:${VPS_HOST}")
+            for _ in $(seq 1 20); do
+              if curl -fsS --max-time 5 "${curl_args[@]}" "${public_base}/health"; then
+                reachable=1
+                break
+              fi
+              sleep 3
+            done
+          fi
+          if [[ "$reachable" -ne 1 ]]; then
+            echo "::warning::${public_base}/health is not reachable yet; check DNS and ports 80/443"
+            exit 0
+          fi
+          echo "Public URL OK: ${public_base}"
+
+          auth_status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "${curl_args[@]}" -u "$basic_auth" "${public_base}/app/info")"
+          if [[ "$auth_status" != "200" ]]; then
+            echo "::error::authenticated GET /app/info returned HTTP ${auth_status}; check APP_BASIC_AUTH"
+            exit 1
+          fi
+          echo "Basic Auth OK: ${public_base}"
+
+      - name: Cleanup remote staging
+        if: always()
+        run: ssh gowa-vps 'rm -rf /tmp/gowa-deploy' || true
+
+      - name: Cleanup local key
+        if: always()
+        run: rm -f ~/.ssh/gowa_deploy

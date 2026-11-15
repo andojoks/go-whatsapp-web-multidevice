@@ -53,6 +53,14 @@ release notes and `GET /app/info` when using a pinned binary or container tag.
 - [Chatwoot](./docs/chatwoot.md), [MCP OAuth](./docs/mcp-oauth.md), [Neon](./docs/neon.md), and [media storage](./docs/media-storage.md) provide integration and operations guides.
 - [OpenAPI](./docs/openapi.yaml) defines the machine-readable REST contract, including `/send/interactive`.
 
+### Production OTP deployment (this fork)
+
+This fork runs an OTP-only instance at `https://api.whatsapp.ktorganicshop.com`
+on a shared Ubuntu VPS. [DEPLOYMENT.md](./DEPLOYMENT.md) covers the shared Caddy
+model, PostgreSQL session store, `.env` mapping, pairing, operations, and
+server-side integration examples for sending OTP messages. The live API uses HTTP
+Basic Auth and stores no chat history on disk.
+
 ## n8n Community Node
 
 - [n8n package](https://www.npmjs.com/package/@aldinokemal2104/n8n-nodes-gowa)
