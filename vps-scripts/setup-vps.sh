@@ -119,6 +119,12 @@ caddy_validate_site_id "$SITE_ID"
 
 # Fail fast with a clear message instead of a crash loop.
 DB_URI_VALUE="$(env_file_get "$RUNTIME_ENV" DB_URI "")"
+# GOWA's database selector only recognizes postgres://. Normalize the common
+# postgresql:// alias so hand-run installer invocations behave like deploys.
+if [[ "$DB_URI_VALUE" == postgresql://* ]]; then
+  DB_URI_VALUE="postgres://${DB_URI_VALUE#postgresql://}"
+  env_set "$RUNTIME_ENV" DB_URI "$DB_URI_VALUE"
+fi
 BASIC_AUTH_VALUE="$(env_file_get "$RUNTIME_ENV" APP_BASIC_AUTH "")"
 if [[ -z "$DB_URI_VALUE" ]]; then
   die "DB_URI is missing in ${RUNTIME_ENV}"
@@ -140,6 +146,10 @@ if [[ "$DB_URI_VALUE" == *CHANGE_ME* ]]; then
 fi
 
 DB_KEYS_URI_VALUE="$(env_file_get "$RUNTIME_ENV" DB_KEYS_URI "")"
+if [[ "$DB_KEYS_URI_VALUE" == postgresql://* ]]; then
+  DB_KEYS_URI_VALUE="postgres://${DB_KEYS_URI_VALUE#postgresql://}"
+  env_set "$RUNTIME_ENV" DB_KEYS_URI "$DB_KEYS_URI_VALUE"
+fi
 if [[ -n "$DB_KEYS_URI_VALUE" && "$DB_KEYS_URI_VALUE" != postgres://* ]]; then
   die "DB_KEYS_URI must be blank or a PostgreSQL URI (postgres://...)"
 fi

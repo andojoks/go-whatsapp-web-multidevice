@@ -81,6 +81,12 @@ ACME_VALUE="$(env_file_get "$ENV_FILE" VPS_ACME_EMAIL "")"
   die "GOWA_CADDY_UPSTREAM must be HOST[:PORT] (got: ${UPSTREAM_VALUE})"
 GOARCH_VALUE="$(env_file_get "$ENV_FILE" VPS_GOARCH "amd64")"
 DB_URI_VALUE="$(env_file_get "$ENV_FILE" DB_URI "")"
+# GOWA's database selector only recognizes postgres://. Providers commonly
+# hand out postgresql:// URLs, so normalize the alias before validation and
+# before writing the runtime .env.
+if [[ "$DB_URI_VALUE" == postgresql://* ]]; then
+  DB_URI_VALUE="postgres://${DB_URI_VALUE#postgresql://}"
+fi
 [[ -n "$DB_URI_VALUE" ]] || die "DB_URI is missing in ${ENV_FILE}"
 if [[ "$DB_URI_VALUE" != postgres://* ]]; then
   die "DB_URI must be a PostgreSQL URI (postgres://...)"
@@ -147,6 +153,8 @@ cp "$ENV_FILE" "${STAGE}/bundle/.env"
 sed -i 's/\r$//' "${STAGE}/bundle/.env"
 # Never ship VPS connection details (or a local private key) to the server.
 sed -i '/^VPS_[A-Z0-9_]*=/d' "${STAGE}/bundle/.env"
+# GOWA only accepts the postgres:// scheme; never ship the alias.
+env_set "${STAGE}/bundle/.env" DB_URI "$DB_URI_VALUE"
 # Caddy is the only public entry point; bind GOWA to loopback on its own port.
 env_set "${STAGE}/bundle/.env" APP_HOST "127.0.0.1"
 env_set "${STAGE}/bundle/.env" APP_PORT "$APP_PORT_VALUE"
@@ -160,6 +168,7 @@ fi
 # OTP deployments keep message history in memory only.
 env_set "${STAGE}/bundle/.env" CHAT_STORAGE_URI "file::memory:?cache=shared"
 env_set "${STAGE}/bundle/.env" CHAT_STORAGE_MAX_OPEN_CONNS "1"
+chmod 600 "${STAGE}/bundle/.env"
 chmod +x "${STAGE}/bundle/vps-scripts/"*.sh "${STAGE}/bundle/vps-scripts/lib/"*.sh
 
 log "Uploading bundle to ${SSH_TARGET}:${REMOTE_DIR}"

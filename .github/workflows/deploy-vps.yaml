@@ -155,6 +155,7 @@ jobs:
           # OTP deployments keep message history in memory only.
           env_set dist/bundle/.env CHAT_STORAGE_URI "file::memory:?cache=shared"
           env_set dist/bundle/.env CHAT_STORAGE_MAX_OPEN_CONNS "1"
+          chmod 600 dist/bundle/.env
 
           echo "APP_PORT=${app_port}"
           echo "GOWA_CADDY_SITE_ID=$(env_file_get dist/bundle/.env GOWA_CADDY_SITE_ID "")"
@@ -168,6 +169,12 @@ jobs:
           env_set dist/bundle/.env PUBLIC_BASE_URL "$public_base"
 
           db_uri="$(env_file_get dist/bundle/.env DB_URI "")"
+          # GOWA only recognizes postgres://. Providers often hand out
+          # postgresql:// URLs, so normalize the alias in the bundle.
+          if [[ "$db_uri" == postgresql://* ]]; then
+            db_uri="postgres://${db_uri#postgresql://}"
+            env_set dist/bundle/.env DB_URI "$db_uri"
+          fi
           if [[ "$db_uri" != postgres://* ]]; then
             echo "::error::DB_URI must be a PostgreSQL URI (postgres://...)"
             exit 1

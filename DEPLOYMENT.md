@@ -235,8 +235,8 @@ loopback database is in use. They do not install PostgreSQL themselves.
    DB_URI=postgres://gowa:URL_ENCODED_PASSWORD@db.example.com:5432/gowa?sslmode=verify-full
    ```
 
-3. Convert the scheme from `postgresql://` to `postgres://`. The deploy scripts
-   require the `postgres://` prefix.
+3. Use the `postgres://` scheme. GOWA only recognizes `postgres://`; the deploy
+   scripts normalize a `postgresql://` URL to `postgres://` for you.
 4. Remove `channel_binding=require` if the provider adds it; GOWA's `lib/pq`
    supports SCRAM-SHA-256 without channel binding.
 5. Percent-encode special characters in the password (`@`, `:`, `/`, `?`, `#`,
@@ -506,7 +506,8 @@ installer, and performs the same health checks. It needs `go`, `ssh`, `tar`, and
 `vps-scripts/setup-vps.sh` refuses to continue unless:
 
 - it runs as root;
-- `DB_URI` is present and starts with `postgres://`;
+- `DB_URI` is a PostgreSQL URI (`postgres://` or `postgresql://`; the installer
+  normalizes the alias to `postgres://`);
 - `DB_URI` does not contain a `CHANGE_ME` placeholder;
 - `APP_BASIC_AUTH` is present, has a colon, and does not contain `CHANGE_ME`;
 - `CHAT_STORAGE_URI` is an in-memory SQLite URI (`:memory:` or `mode=memory`);
@@ -982,8 +983,8 @@ PostgreSQL, so the phone is no longer linked after WhatsApp processes the logout
 | `import` errors or `File to import not found: security_headers` | Base Caddyfile is foreign and does not define the shared snippet | Re-run `sudo bash vps-scripts/caddy/install-base.sh` or let the renderer inline headers; verify the base imports `sites-enabled/*.caddy` |
 | `GOWA_CADDY_SITE_ID` contains invalid characters | Site id must be lowercase letters, digits, `.`, `_`, `-` | Use for example `gowa-otp` |
 | `APP_PORT` already in use | Another app (for example PayConnect on 8080) uses the port | Pick a unique port (this deployment uses 8081) and redeploy |
-| `unknown database type` at startup | `DB_URI` does not start with `postgres://` | Convert `postgresql://` to `postgres://` and redeploy |
-| Deploy fails with `DB_URI must be a PostgreSQL URI` | Placeholder or wrong scheme in the secret | Use a real `postgres://` URI without `CHANGE_ME` |
+| `unknown database type` at startup | `DB_URI` does not use the `postgres://` scheme | Use a `postgres://` URI (or `postgresql://`; the deploy scripts normalize it) and redeploy |
+| Deploy fails with `DB_URI must be a PostgreSQL URI` | Placeholder or wrong scheme in the secret | Use a real PostgreSQL URI (`postgres://` or `postgresql://`) without `CHANGE_ME` |
 | `401 Unauthorized` | Wrong Basic Auth credentials, or a colon in the password | Recheck `APP_BASIC_AUTH`; regenerate the password without `:` |
 | `400 DEVICE_ID_REQUIRED` | No device exists yet, so no default device can be resolved | Create a slot with `POST /devices` (section 6.2), then pair it |
 | `device not found` | Sent `X-Device-Id` with a slot alias that no longer exists after restart | Omit `X-Device-Id` for the default/only device, or read the current ID from `GET /devices` |
