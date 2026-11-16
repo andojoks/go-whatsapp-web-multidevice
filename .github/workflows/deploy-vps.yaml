@@ -179,6 +179,13 @@ jobs:
             echo "::error::DB_URI must be a PostgreSQL URI (postgres://...)"
             exit 1
           fi
+          # lib/pq needs prepared statements and session state; a transaction
+          # pooler causes "unnamed prepared statement does not exist" and
+          # session-key write failures. Require the direct database hostname.
+          if [[ "$db_uri" == *"-pooler."* || "$db_uri" == *".pooler."* || "$db_uri" == *"//pooler."* ]]; then
+            echo "::error::DB_URI points to a transaction pooler; use the direct database hostname"
+            exit 1
+          fi
           if [[ "$db_uri" == *CHANGE_ME* ]]; then
             echo "::error::DB_URI still contains a CHANGE_ME placeholder"
             exit 1

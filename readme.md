@@ -270,7 +270,76 @@ Basic Auth and stores no chat history on disk.
 
 ## Configuration
 
-To store WhatsApp sessions and keys in managed PostgreSQL, follow the [Neon setup guide](./docs/neon.md).
+### PostgreSQL session store
+
+GOWA stores the WhatsApp session, encryption keys, and signal-protocol state in
+PostgreSQL so a restart does not require re-pairing. SQLite is fine for local
+experiments, but use PostgreSQL for any deployment that must keep the session.
+
+GOWA creates and upgrades its own `whatsmeow_*` tables at startup, so the
+database role needs `CREATE` on the schema (and `ALTER` for upgrades). Do not
+reuse an application database.
+
+#### PostgreSQL on the same VPS (recommended for a small deployment)
+
+```bash
+sudo apt-get update -y
+sudo apt-get install -y postgresql
+
+sudo -u postgres psql <<'SQL'
+CREATE ROLE gowa LOGIN PASSWORD 'replace-with-a-long-random-password';
+CREATE DATABASE gowa OWNER gowa;
+REVOKE ALL ON DATABASE gowa FROM PUBLIC;
+
+\connect gowa
+GRANT ALL ON SCHEMA public TO gowa;
+SQL
+```
+
+Use a loopback URI in `.env` (URL-encode special characters in the password):
+
+```dotenv
+DB_URI=postgres://gowa:URL_ENCODED_PASSWORD@127.0.0.1:5432/gowa?sslmode=disable
+DB_KEYS_URI=
+CHAT_STORAGE_URI=file::memory:?cache=shared
+CHAT_STORAGE_MAX_OPEN_CONNS=1
+```
+
+`DB_KEYS_URI` is intentionally blank so the session key cache uses the same
+database. Leaving either store on `:memory:` loses the session on restart.
+
+#### Managed PostgreSQL
+
+Use the provider's **direct** connection string, not a transaction pooler:
+
+```dotenv
+DB_URI=postgres://gowa:URL_ENCODED_PASSWORD@db.example.com:5432/gowa?sslmode=verify-full
+```
+
+- **Do not use a transaction pooler** (`-pooler` hostnames, PgBouncer in
+  transaction mode, or similar). GOWA uses `lib/pq`, which relies on prepared
+  statements and session state. Through a transaction pooler you can see errors
+  such as `pq: bind message supplies 1 parameters, but prepared statement ""
+  requires 3`, `pq: unnamed prepared statement does not exist`, or
+  `pq: no more connections allowed`.
+- Prefer a direct hostname even when the provider offers a pooler. If the only
+  reachable endpoint is a pooler, use session mode rather than transaction mode.
+- Set `sslmode=verify-full` for remote hosts. Remove `channel_binding=require`
+  if the provider adds it; `lib/pq` supports SCRAM-SHA-256 without channel
+  binding.
+- Follow the [Neon setup guide](./docs/neon.md) for Neon-specific details.
+
+Verify after startup:
+
+```bash
+sudo -u postgres psql -d gowa -c "\dt whatsmeow_*"
+psql "$DB_URI" -c "select count(*) from whatsmeow_device"
+```
+
+The table list should contain the `whatsmeow_*` tables, and the device count is
+`1` after pairing. Do not print the rows: they contain private key material.
+See [DEPLOYMENT.md](./DEPLOYMENT.md#2-postgresql) for production setup, TLS,
+backup, and rotation details.
 
 Configuration is initialized from flags, then most environment settings are applied.
 A set environment value can therefore override the matching flag. The `.env` file

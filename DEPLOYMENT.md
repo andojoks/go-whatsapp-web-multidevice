@@ -235,6 +235,15 @@ loopback database is in use. They do not install PostgreSQL themselves.
    DB_URI=postgres://gowa:URL_ENCODED_PASSWORD@db.example.com:5432/gowa?sslmode=verify-full
    ```
 
+   Never use a transaction pooler (`-pooler` hostnames, PgBouncer transaction
+   mode, or similar). GOWA's `lib/pq` session store depends on prepared
+   statements and session state. A transaction pooler produces errors such as
+   `pq: bind message supplies 1 parameters, but prepared statement "" requires
+   3`, `pq: unnamed prepared statement does not exist`, and failed sender-key or
+   app-state writes. The deploy scripts now reject known pooler hostnames; use
+   the direct hostname (or a session-mode pooler if your provider has no direct
+   endpoint).
+
 3. Use the `postgres://` scheme. GOWA only recognizes `postgres://`; the deploy
    scripts normalize a `postgresql://` URL to `postgres://` for you.
 4. Remove `channel_binding=require` if the provider adds it; GOWA's `lib/pq`
@@ -991,6 +1000,7 @@ PostgreSQL, so the phone is no longer linked after WhatsApp processes the logout
 | Pairing code rejected/expired | Code is short-lived | Call `POST /devices/<id>/login/code?phone=...` again and enter the new code immediately |
 | Pairing succeeds but sends fail | Session logged out, phone removed the linked device, or the phone has no WhatsApp | Check `GET /devices/<id>/status` and the `/devices` state; re-pair if WhatsApp shows the companion as removed |
 | `database initialization error` / TLS error | Wrong password, URL-encoding, CA, or `sslmode` | Test the exact `DB_URI` with `psql` from the VPS; percent-encode the password |
+| `pq: bind message supplies ... prepared statement "" requires ...`, `unnamed prepared statement does not exist`, or session keys never persist | `DB_URI` points at a transaction pooler | Use the provider's direct database hostname (or a session-mode pooler); redeploy and re-pair only if the old session was corrupted |
 | Certificate issuance fails | Port 80 blocked or a proxy intercepts HTTP-01 | Allow port 80; set the DNS record to DNS-only; retry Caddy |
 | Deploy succeeds but the API is unreachable publicly | `PUBLIC_BASE_URL` origin mismatch or `VPS_HOST` is not the public IP | Confirm both secrets; check `gowa-otp.caddy` and `systemctl reload caddy` |
 

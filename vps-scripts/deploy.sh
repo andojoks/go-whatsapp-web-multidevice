@@ -91,6 +91,13 @@ fi
 if [[ "$DB_URI_VALUE" != postgres://* ]]; then
   die "DB_URI must be a PostgreSQL URI (postgres://...)"
 fi
+# lib/pq uses prepared statements and session state. Transaction poolers
+# (PgBouncer transaction mode, provider "-pooler" hosts, etc.) break session
+# storage with errors like "unnamed prepared statement does not exist".
+# Refuse to deploy a known pooler endpoint; use the direct database hostname.
+if [[ "$DB_URI_VALUE" == *"-pooler."* || "$DB_URI_VALUE" == *".pooler."* || "$DB_URI_VALUE" == *"//pooler."* ]]; then
+  die "DB_URI points to a transaction pooler. Use the provider's direct database hostname; GOWA's lib/pq session store requires prepared statements."
+fi
 BASIC_AUTH_VALUE="$(env_file_get "$ENV_FILE" APP_BASIC_AUTH "")"
 [[ -n "$BASIC_AUTH_VALUE" ]] || die "APP_BASIC_AUTH is missing in ${ENV_FILE}"
 if [[ "$BASIC_AUTH_VALUE" == *CHANGE_ME* ]]; then
