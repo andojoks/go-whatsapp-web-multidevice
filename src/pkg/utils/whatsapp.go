@@ -1196,6 +1196,37 @@ func ResolveLIDToPhone(ctx context.Context, jid types.JID, client *whatsmeow.Cli
 	return jid
 }
 
+// ResolvePhoneToLIDFromServer asks WhatsApp which LID backs a phone number.
+//
+// ResolvePhoneToLID only checks the local LID map. A number can be a valid
+// contact alias whose LID points to a different registered PN; that mapping is
+// returned by the `addressing_mode=lid` usync used by IsOnWhatsApp, but the
+// local map may be empty until that query runs. Asking the server here lets
+// callers address the LID directly, which GOWA can resolve back to the PN.
+func ResolvePhoneToLIDFromServer(ctx context.Context, phone string, client *whatsmeow.Client) types.JID {
+	if client == nil || !client.IsConnected() {
+		return types.JID{}
+	}
+	number := strings.TrimSpace(phone)
+	if number == "" {
+		return types.JID{}
+	}
+	if !strings.HasPrefix(number, "+") {
+		number = "+" + number
+	}
+	results, err := client.IsOnWhatsApp(ctx, []string{number})
+	if err != nil {
+		logrus.Debugf("Failed to resolve LID for %s from server: %v", number, err)
+		return types.JID{}
+	}
+	for _, result := range results {
+		if result.JID.Server == types.HiddenUserServer {
+			return result.JID
+		}
+	}
+	return types.JID{}
+}
+
 // ResolvePhoneToLID converts @s.whatsapp.net JIDs to their corresponding @lid JIDs
 // Returns empty JID if it's not a user JID or if LID lookup fails
 func ResolvePhoneToLID(ctx context.Context, jid types.JID, client *whatsmeow.Client) types.JID {

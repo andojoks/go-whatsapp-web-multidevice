@@ -27,6 +27,7 @@ import (
 type serviceUser struct {
 	chatStorageRepo         domainChatStorage.IChatStorageRepository
 	validateJIDFn           func(client *whatsmeow.Client, phone string) (types.JID, error)
+	resolvePhoneToLIDFn     func(ctx context.Context, client *whatsmeow.Client, jid types.JID, phone string) types.JID
 	getProfilePictureInfoFn func(ctx context.Context, client *whatsmeow.Client, jid types.JID, params *whatsmeow.GetProfilePictureParams) (*types.ProfilePictureInfo, error)
 }
 
@@ -41,6 +42,16 @@ func (service serviceUser) validateJID(client *whatsmeow.Client, phone string) (
 		return service.validateJIDFn(client, phone)
 	}
 	return utils.ValidateJidWithLogin(client, phone)
+}
+
+func (service serviceUser) resolvePhoneToLID(ctx context.Context, client *whatsmeow.Client, jid types.JID, phone string) types.JID {
+	if service.resolvePhoneToLIDFn != nil {
+		return service.resolvePhoneToLIDFn(ctx, client, jid, phone)
+	}
+	if lid := utils.ResolvePhoneToLID(ctx, jid, client); !lid.IsEmpty() {
+		return lid
+	}
+	return utils.ResolvePhoneToLIDFromServer(ctx, phone, client)
 }
 
 func (service serviceUser) getProfilePictureInfo(ctx context.Context, client *whatsmeow.Client, jid types.JID, params *whatsmeow.GetProfilePictureParams) (*types.ProfilePictureInfo, error) {
@@ -76,9 +87,11 @@ func (service serviceUser) Info(ctx context.Context, request domainUser.InfoRequ
 		response.ResolvedPhone = dataWaRecipient.User
 	}
 
-	// If input was phone number, try to get corresponding LID
+	// If input was phone number, try to get corresponding LID. The local map is
+	// checked first; the server usync fallback also finds contact aliases whose
+	// LID points at a different registered PN.
 	if dataWaRecipient.Server == types.DefaultUserServer {
-		lid := utils.ResolvePhoneToLID(ctx, dataWaRecipient, client)
+		lid := service.resolvePhoneToLID(ctx, client, dataWaRecipient, request.Phone)
 		if !lid.IsEmpty() {
 			response.ResolvedLID = lid.String()
 		}
